@@ -1,10 +1,11 @@
+
 const { getTime, drive } = global.utils;
 
 module.exports = {
 	config: {
 		name: "leave",
-		version: "1.4",
-		author: "NTKhang",
+		version: "2.0",
+		author: "Master Charbel",
 		category: "events"
 	},
 
@@ -14,85 +15,106 @@ module.exports = {
 			session2: "trưa",
 			session3: "chiều",
 			session4: "tối",
-			leaveType1: "tự rời",
-			leaveType2: "bị kick",
-			defaultLeaveMessage: "{userName} đã {type} khỏi nhóm"
+			leaveType1: "đã tự rời",
+			leaveType2: "đã bị kick khỏi",
+			defaultLeaveMessage: "👋 {userName} {type} nhóm."
 		},
 		en: {
 			session1: "morning",
 			session2: "noon",
 			session3: "afternoon",
 			session4: "evening",
-			leaveType1: "left",
-			leaveType2: "was kicked from",
-			defaultLeaveMessage: "{userName} {type} the group"
+			leaveType1: "a quitté",
+			leaveType2: "a été expulsé de",
+			defaultLeaveMessage: "👋 {userName} {type} le groupe."
 		}
 	},
 
 	onStart: async ({ threadsData, message, event, api, usersData, getLang }) => {
-		if (event.logMessageType == "log:unsubscribe")
-			return async function () {
+		if (event.logMessageType !== "log:unsubscribe")
+			return;
+
+		return async function () {
+			try {
 				const { threadID } = event;
 				const threadData = await threadsData.get(threadID);
-				if (!threadData.settings.sendLeaveMessage)
+
+				if (!threadData || !threadData.settings?.sendLeaveMessage)
 					return;
-				const { leftParticipantFbId } = event.logMessageData;
+
+				const { leftParticipantFbId } = event.logMessageData || {};
+
+				if (!leftParticipantFbId)
+					return;
+
+				// Ne pas annoncer le départ du bot lui-même
 				if (leftParticipantFbId == api.getCurrentUserID())
 					return;
-				const hours = getTime("HH");
 
-				const threadName = threadData.threadName;
-				const userName = await usersData.getName(leftParticipantFbId);
+				const hours = Number(getTime("HH"));
+				const threadName = threadData.threadName || "ce groupe";
+				const userName = await usersData.getName(leftParticipantFbId)
+					.catch(() => "Un membre");
 
-				// {userName}   : name of the user who left the group
-				// {type}       : type of the message (leave)
-				// {boxName}    : name of the box
-				// {threadName} : name of the box
-				// {time}       : time
-				// {session}    : session
+				const isKick = leftParticipantFbId != event.author;
 
-				let { leaveMessage = getLang("defaultLeaveMessage") } = threadData.data;
-				const form = {
-					mentions: leaveMessage.match(/\{userNameTag\}/g) ? [{
-						tag: userName,
-						id: leftParticipantFbId
-					}] : null
-				};
+				let leaveMessage = threadData.data?.leaveMessage
+					|| getLang("defaultLeaveMessage");
 
+				const session = hours <= 10
+					? getLang("session1")
+					: hours <= 12
+						? getLang("session2")
+						: hours <= 18
+							? getLang("session3")
+							: getLang("session4");
+
+				// Remplacer les variables du message
 				leaveMessage = leaveMessage
 					.replace(/\{userName\}|\{userNameTag\}/g, userName)
-					.replace(/\{type\}/g, leftParticipantFbId == event.author ? getLang("leaveType1") : getLang("leaveType2"))
-					.replace(/\{threadName\}|\{boxName\}/g, threadName)
-					.replace(/\{time\}/g, hours)
-					.replace(/\{session\}/g, hours <= 10 ?
-						getLang("session1") :
-						hours <= 12 ?
-							getLang("session2") :
-							hours <= 18 ?
-								getLang("session3") :
-								getLang("session4")
-					);
+					.replace(/\{type\}/g, isKick
+						? "a été expulsé de"
+						: "a quitté")
+					.replace(/\{boxName\}|\{threadName\}/g, threadName)
+					.replace(/\{time\}/g, String(hours).padStart(2, "0"))
+					.replace(/\{session\}/g, session);
 
-				form.body = leaveMessage;
+				const form = {
+					body: leaveMessage
+				};
 
-				if (leaveMessage.includes("{userNameTag}")) {
+				// Mentionner le membre si demandé
+				if (/\{userNameTag\}/.test(
+					threadData.data?.leaveMessage || ""
+				)) {
 					form.mentions = [{
-						id: leftParticipantFbId,
-						tag: userName
+						tag: userName,
+						id: leftParticipantFbId
 					}];
 				}
 
-				if (threadData.data.leaveAttachment) {
-					const files = threadData.data.leaveAttachment;
-					const attachments = files.reduce((acc, file) => {
-						acc.push(drive.getFile(file, "stream"));
-						return acc;
-					}, []);
-					form.attachment = (await Promise.allSettled(attachments))
-						.filter(({ status }) => status == "fulfilled")
-						.map(({ value }) => value);
+				// Ajouter les pièces jointes configurées
+				const files = threadData.data?.leaveAttachment;
+
+				if (Array.isArray(files) && files.length > 0) {
+					const results = await Promise.allSettled(
+						files.map(file => drive.getFile(file, "stream"))
+					);
+
+					const attachments = results
+						.filter(result => result.status === "fulfilled")
+						.map(result => result.value);
+
+					if (attachments.length > 0)
+						form.attachment = attachments;
 				}
-				message.send(form);
-			};
+
+				await message.send(form);
+			}
+			catch (error) {
+				console.error("[CHARVEX AI | LEAVE EVENT]", error);
+			}
+		};
 	}
 };
+				
